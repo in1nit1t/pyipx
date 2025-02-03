@@ -211,7 +211,7 @@ class Asset:
         return self._compressed_data
 
     def get_original_data(self):
-        if not self._original_data:
+        if not self._original_data and self._type != b'o':  # Runtime options have no actual data
             self._original_data = Util.decompress(self._compressed_data)
         return self._original_data
 
@@ -415,6 +415,7 @@ class Pyipx:
             self._file_type = FileType.EXE if b"MZ" == file_magic[:2] else FileType.RAW
             metadata_offset = Pyipx._find_metadata(self._stream)
         assert metadata_offset != -1, "[!] Can't find metadata in the given file"
+
         self._pydata = Pydata.from_metadata(self._stream, metadata_offset)
         metadata = self._pydata.get_metadata()
         self._py_major_version = metadata.get_py_major_version()
@@ -475,15 +476,17 @@ class Pyipx:
         toc_raw = b''
         data_raw = b''
         for name, asset in self._assets.items():
-            if asset.get_parent() or asset.get_type() in b"od":
+            asset_type = asset.get_type()
+            if asset.get_parent() or asset_type == b'd':
                 continue
             flag = asset.get_compressed_flag()
             data = asset.get_compressed_data() if flag else asset.get_original_data()
             entry = TocEntry(offset, len(data), \
-                asset.get_original_size(), flag, asset.get_type(), asset.get_name().encode("utf-8"))
+                asset.get_original_size(), flag, asset_type, asset.get_name().encode("utf-8"))
             toc_raw += entry.to_raw_bytes()
             data_raw += data
             offset += len(data)
+
         stub = self._pydata.get_metadata()
         package_length = offset + len(toc_raw) + len(stub)
         metadata = Metadata(package_length, offset, len(toc_raw), stub.get_py_version(), stub.get_py_libname())
@@ -497,12 +500,14 @@ class Pyipx:
                 self._stream.seek(0, 0)
                 f.write(self._stream.read(offset))
                 f.write(pydata)
+
         elif self._file_type == FileType.ELF:
             tmp_file = "pydata.raw"
             with open(tmp_file, "wb") as f:
                 f.write(pydata)
             os.system("objcopy --update-section pydata={0} {1} {2}".format(tmp_file, self._file_path, output_path))
             os.remove(tmp_file)
+
         else:
             with open(output_path, "wb") as f:
                 f.write(pydata)
@@ -549,14 +554,21 @@ class Pyipx:
             entry = self._pydata.asset_entry_at(i)
             self._stream.seek(self._pydata.get_base() + entry.get_data_offset(), 0)
             data = self._stream.read(entry.get_compressed_size())
+
+            asset_type, asset_name = entry.get_asset_type(), Util.make_string(entry.get_asset_name())
+            if with_hint:
+                if asset_type == b'o':
+                    print("[#] Runtime option: {0}".format(asset_name))
+                elif asset_type == b's':
+                    print("[*] Maybe entrance: {0}".format(asset.get_full_name()))
+
             compress_flag = entry.get_compress_flag()
-            asset = Asset(entry.get_asset_type(), Util.make_string(entry.get_asset_name()), compress_flag)
+            asset = Asset(asset_type, asset_name, compress_flag)
             if compress_flag:
                 asset.set_compressed_data(data)
             else:
                 asset.set_original_data(data)
-            if with_hint and asset.get_type() == b's':
-                print("[*] Maybe entrance: {0}".format(asset.get_full_name()))
+
             asset.dump(output_basedir, self)
             self.add_asset(asset)
 
@@ -582,12 +594,11 @@ if __name__ == "__main__":
         print("  file\texecutable to extract / repack")
         print("   dir\tdirectory to be repackaged")
         print("   out\trepackage file output path")
-        exit()
-
-    pyipx = Pyipx(sys.argv[1])
-    if argc == 2:
-        pyipx.extract(os.path.abspath(sys.argv[1]) + "_extracted", True)
-        print("[+] Extraction finished")
     else:
-        pyipx.repack(sys.argv[2], sys.argv[3])
-        print("[+] Repackaging finished")
+        pyipx = Pyipx(sys.argv[1])
+        if argc == 2:
+            pyipx.extract(os.path.abspath(sys.argv[1]) + "_extracted", True)
+            print("[+] Extraction finished")
+        else:
+            pyipx.repack(sys.argv[2], sys.argv[3])
+            print("[+] Repackaging finished")
